@@ -4,9 +4,19 @@
 
 ## 快速开始
 
-下载 `index.html`，浏览器直接打开，允许摄像头即可。
+```bash
+# 任选一种方式启动本地服务
+npx serve .
+# 或
+python3 -m http.server
+```
 
-没有摄像头也能玩 — 自动降级为鼠标交互。
+然后打开浏览器访问 `http://localhost:3000`（serve）或 `http://localhost:8000`（python），允许摄像头即可。
+
+> 需要通过 HTTP 服务访问，`file://` 协议下摄像头权限受限。
+> 没有摄像头也能玩 — 自动降级为鼠标交互。
+
+依赖优先从 CDN 加载（jsdelivr），CDN 不可用时自动切换到 `libs/` 下的本地副本，断网也能跑。
 
 ## 六种形态
 

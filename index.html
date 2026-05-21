@@ -68,17 +68,47 @@
 
 <div id="stat"></div>
 
-<!-- Three.js via importmap (ES module) -->
-<script type="importmap">
-  {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
-</script>
-
-<!-- MediaPipe old-style (stable, callback-driven) -->
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js"></script>
-
 <script type="module">
-import * as THREE from 'three';
+/* ══════ CDN → LOCAL FALLBACK ══════ */
+let cdnOK = true;
+
+function loadScript(cdn, local){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = cdn;
+    s.onload = resolve;
+    s.onerror = () => {
+      cdnOK = false;
+      s.remove();
+      const s2 = document.createElement('script');
+      s2.src = local;
+      s2.onload = resolve;
+      s2.onerror = () => reject(new Error('Failed: ' + local));
+      document.head.appendChild(s2);
+    };
+    document.head.appendChild(s);
+  });
+}
+
+let mpAvailable = true;
+try {
+  await loadScript(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js',
+    './libs/hands.min.js'
+  );
+  await loadScript(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js',
+    './libs/camera_utils.min.js'
+  );
+} catch { mpAvailable = false; }
+
+let THREE;
+try {
+  THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js');
+} catch {
+  cdnOK = false;
+  THREE = await import('./libs/three.module.js');
+}
 
 /* ══════ DOM ══════ */
 const canvas  = document.getElementById('c');
@@ -383,10 +413,16 @@ function onHandResults(results){
 }
 
 async function initHandTracking(){
+  if(!mpAvailable || typeof Hands === 'undefined'){
+    console.warn('手势库未加载，仅支持鼠标交互');
+    return;
+  }
   try {
 
     const hands = new Hands({
-      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+      locateFile: file => cdnOK
+        ? `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+        : `./libs/hands/${file}`
     });
 
     hands.setOptions({
