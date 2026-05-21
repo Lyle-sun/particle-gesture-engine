@@ -64,6 +64,7 @@
   <button data-s="wave">〰<span class="tt">波浪</span></button>
   <button data-s="ring">◎<span class="tt">光环</span></button>
   <button data-s="scatter">✺<span class="tt">散射</span></button>
+  <button data-s="heart">♥<span class="tt">红心</span></button>
 </div>
 
 <div id="stat"></div>
@@ -131,15 +132,28 @@ cam3d.position.set(0, 0.5, 6);
 cam3d.lookAt(0, 0, 0);
 scene.add(new THREE.AmbientLight(0x222244, 0.4));
 
+/* ══════ BLOOM POST-PROCESSING ══════ */
+let composer = null;
+try {
+  const { EffectComposer } = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js');
+  const { RenderPass } = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/RenderPass.js');
+  const { UnrealBloomPass } = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js');
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, cam3d));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(W(), H()), 0.8, 0.4, 0.2));
+} catch(e) { console.warn('Bloom unavailable:', e.message); }
+
 /* ══════ GLOW TEXTURE ══════ */
-function makeGlow(sz=128){
+function makeGlow(sz=256){
   const cv=document.createElement('canvas'); cv.width=cv.height=sz;
   const x=cv.getContext('2d');
   const g=x.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
   g.addColorStop(0,'rgba(255,255,255,1)');
-  g.addColorStop(0.05,'rgba(255,255,255,0.95)');
-  g.addColorStop(0.2,'rgba(255,255,255,0.55)');
-  g.addColorStop(0.4,'rgba(255,255,255,0.1)');
+  g.addColorStop(0.03,'rgba(255,255,255,0.97)');
+  g.addColorStop(0.08,'rgba(255,255,255,0.85)');
+  g.addColorStop(0.15,'rgba(255,255,255,0.6)');
+  g.addColorStop(0.3,'rgba(255,255,255,0.2)');
+  g.addColorStop(0.5,'rgba(255,255,255,0.05)');
   g.addColorStop(1,'rgba(255,255,255,0)');
   x.fillStyle=g; x.fillRect(0,0,sz,sz);
   return new THREE.CanvasTexture(cv);
@@ -175,7 +189,7 @@ geo.setAttribute('position',new THREE.BufferAttribute(posA,3));
 geo.setAttribute('color',new THREE.BufferAttribute(colA,3));
 geo.setAttribute('size',new THREE.BufferAttribute(sizA,1));
 const pMat=new THREE.PointsMaterial({
-  size:.12,map:glowTex,vertexColors:true,
+  size:.18,map:glowTex,vertexColors:true,
   blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:.9,
 });
 const pMesh=new THREE.Points(geo,pMat);
@@ -187,7 +201,7 @@ for(let i=0;i<MAX;i++){
     x:Math.cos(th)*Math.cos(ph)*r, y:Math.sin(ph)*r, z:Math.sin(th)*Math.cos(ph)*r,
     vx:0,vy:0,vz:0, tx:0,ty:0,tz:0,
     color:new THREE.Color().setHSL(Math.random(),.8,.5+Math.random()*.4),
-    size:.02+Math.random()*.06
+    size:.04+Math.random()*.1
   });
 }
 
@@ -228,9 +242,29 @@ function shapeScatter(i,n){
   const r=1+Math.random()*4.5,th=Math.random()*Math.PI*2,ph=(Math.random()-.5)*Math.PI;
   return{x:Math.cos(th)*Math.cos(ph)*r,y:Math.sin(ph)*r,z:Math.sin(th)*Math.cos(ph)*r};
 }
+function shapeHeart(i,n){
+  // 3D solid heart: take 2D heart outline, give it thickness via a sphere-like cross section
+  const t = Math.random() * Math.PI * 2;
+  const bx = 16 * Math.pow(Math.sin(t), 3);
+  const by = 13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+  // Scale from boundary toward center for interior fill
+  const r = 0.15 + Math.sqrt(Math.random()) * 0.85;
+  const fx = bx * r;
+  const fy = by * r;
+  // 3D depth: at each (fx,fy), the heart has thickness proportional to how deep inside the boundary
+  // Compute how far inside: distance from (fx,fy) to boundary along same ray
+  const edgeDist = 1.0 - r; // 0 at edge, ~0.85 at center
+  const maxDepth = edgeDist * 12; // max Z extent at this point
+  // Spherical cross-section in Z
+  const zAngle = Math.random() * Math.PI * 2;
+  const zr = Math.sqrt(Math.random());
+  const fz = Math.cos(zAngle) * zr * maxDepth;
+  const scale = 0.09;
+  return{x: fx * scale, y: fy * scale, z: fz * scale};
+}
 
-const shapeFns={nebula:shapeNebula,helix:shapeHelix,sphere:shapeSphere,wave:shapeWave,ring:shapeRing,scatter:shapeScatter};
-const shapeHues={nebula:.58,helix:.75,sphere:.52,wave:.42,ring:.62,scatter:0};
+const shapeFns={nebula:shapeNebula,helix:shapeHelix,sphere:shapeSphere,wave:shapeWave,ring:shapeRing,scatter:shapeScatter,heart:shapeHeart};
+const shapeHues={nebula:.58,helix:.75,sphere:.52,wave:.42,ring:.62,scatter:0,heart:0};
 
 function assignTargets(){
   const fn=shapeFns[curShape], bh=shapeHues[curShape];
@@ -238,6 +272,14 @@ function assignTargets(){
     const t=fn(i,P.length);
     P[i].tx=t.x; P[i].ty=t.y; P[i].tz=t.z;
     if(curShape==='scatter') P[i].color.setHSL(Math.random(),.85,.45+Math.random()*.45);
+    else if(curShape==='heart'){
+      // Radial gradient: bright pink/white center → deep red edge
+      const d = Math.sqrt(t.x*t.x + t.y*t.y) / 1.5; // normalized 0-1
+      const hue = 0.96 + d * 0.02; // slight pink→red shift
+      const sat = 0.65 + d * 0.3;
+      const lit = 0.75 - d * 0.35;
+      P[i].color.setHSL(hue % 1, sat, Math.max(0.35, lit));
+    }
     else P[i].color.setHSL((bh+(i/P.length)*.12+Math.random()*.04)%1,.85,.45+Math.random()*.45);
   }
 }
@@ -251,7 +293,7 @@ document.getElementById('shapeBar').addEventListener('click',e=>{
   assignTargets();
 });
 window.addEventListener('keydown',e=>{
-  const map={'1':'nebula','2':'helix','3':'sphere','4':'wave','5':'ring','6':'scatter'};
+  const map={'1':'nebula','2':'helix','3':'sphere','4':'wave','5':'ring','6':'scatter','7':'heart'};
   if(map[e.key]){curShape=map[e.key];assignTargets();
     document.querySelectorAll('.shapes button').forEach(x=>x.classList.toggle('on',x.dataset.s===curShape));
   }
@@ -275,7 +317,9 @@ window.addEventListener('mousemove',e=>{
   }
   if(aMode==='attract'&&mDown)setAtt(e.clientX,e.clientY);
 });
-canvas.addEventListener('wheel',e=>{tZoom=Math.max(2,Math.min(14,tZoom+e.deltaY*.005));});
+canvas.addEventListener('wheel',e=>{
+  targetScale = Math.max(0.4, Math.min(2.0, targetScale - e.deltaY * 0.001));
+});
 
 canvas.addEventListener('touchstart',e=>{mDown=true;aMode='attract';mPX=e.touches[0].clientX;mPY=e.touches[0].clientY;setAtt(mPX,mPY);},{passive:false});
 canvas.addEventListener('touchmove',e=>{
@@ -295,9 +339,12 @@ canvas.addEventListener('touchend',()=>{mDown=false;aMode='none';});
 let handLM = null;
 let mpReady = false;
 let gestureCandidate = 'none';
+let targetScale = 1.0;
+let curScale = 1.0;
+let heartbeatBase = 1.0;
+let lastExt = 0;
 let gestureCandidateCount = 0;
 let prevMode = 'none';
-const explodeCenter = new THREE.Vector3();
 
 const SKEL_CONN=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
 
@@ -307,8 +354,11 @@ function isPinch(lm){
 
 function countOpen(lm){
   const w=lm[0]; let c=0;
+  // Four fingers: compare tip-to-wrist vs pip-to-wrist distance
   for(const[tip,pip]of[[8,6],[12,10],[16,14],[20,18]]){
-    if(Math.hypot(lm[tip].x-w.x,lm[tip].y-w.y) > Math.hypot(lm[pip].x-w.x,lm[pip].y-w.y)*1.05) c++;
+    const tipDist = Math.hypot(lm[tip].x-w.x,lm[tip].y-w.y);
+    const pipDist = Math.hypot(lm[pip].x-w.x,lm[pip].y-w.y);
+    if(tipDist > pipDist * 1.15) c++;
   }
   return c;
 }
@@ -342,48 +392,39 @@ function onHandResults(results){
 
     const pinch = isPinch(lm);
     const ext = countOpen(lm);
+    lastExt = ext;
 
-    // Determine raw gesture mode
+    // Determine raw gesture mode + target scale
     let rawMode;
+    if(ext === 0){
+      rawMode='scale'; targetScale = 0.5;
+    } else if(ext === 1){
+      rawMode='heartbeat';
+    } else if(ext === 2){
+      rawMode='spin';
+    } else if(ext === 3){
+      rawMode='rspin';
+    } else {
+      rawMode='scale';
+      targetScale = 0.8 + ext * 0.3;
+    }
+
+    if(rawMode === 'heartbeat' && aMode !== 'heartbeat'){
+      heartbeatBase = curScale;
+    }
+    aMode = rawMode;
+
+    // Always update attractor to current hand position
     if(pinch){
-      rawMode='attract';
-    } else if(ext >= 4){
-      rawMode='repel';
-    } else if(ext >= 2){
-      rawMode='attract';
-    } else {
-      rawMode='orbit';
-    }
-
-    // Gesture smoothing: only switch mode after N consecutive same-mode frames
-    if(rawMode === gestureCandidate){
-      gestureCandidateCount++;
-    } else {
-      gestureCandidate = rawMode;
-      gestureCandidateCount = 1;
-    }
-    if(gestureCandidateCount >= 3){
-      const newMode = gestureCandidate;
-      // When switching TO repel from attract, snapshot the gather point as explosion center
-      if(newMode === 'repel' && aMode === 'attract'){
-        explodeCenter.copy(attractor);
-      }
-      aMode = newMode;
-    }
-
-    // Choose attractor point based on confirmed mode
-    if(aMode==='attract' && pinch){
       const px = (lm[4].x + lm[8].x) / 2;
       const py = (lm[4].y + lm[8].y) / 2;
-      const pinchW = ndc2world(px, py);
-      attractor.copy(pinchW);
+      attractor.copy(ndc2world(px, py));
     } else {
       const palmPts = [0, 5, 9, 13, 17];
       let cx=0, cy=0;
       for(const idx of palmPts){ cx+=lm[idx].x; cy+=lm[idx].y; }
       cx/=palmPts.length; cy/=palmPts.length;
-      const palmW = ndc2world(cx, cy);
-      attractor.copy(palmW);
+      attractor.copy(ndc2world(cx, cy));
     }
 
     // Skeleton preview
@@ -409,6 +450,7 @@ function onHandResults(results){
     handLM = null;
     skelCv.classList.remove('on');
     if(!mDown) aMode='none';
+    targetScale = 1.0;
   }
 }
 
@@ -460,43 +502,19 @@ function updateParticles(dt){
   for(let i=0;i<P.length;i++){
     const p=P[i];
 
-    // ── Spring force: always pull toward shape target ──
-    const sk = aMode==='attract' ? 0.3 : (aMode==='repel' ? 0.6 : 2.0);
-    if(curShape!=='scatter'){
-      p.vx += (p.tx - p.x) * sk * dt;
-      p.vy += (p.ty - p.y) * sk * dt;
-      p.vz += (p.tz - p.z) * sk * dt;
-    }
-
-    // ── Hand interaction force ──
-    if(aMode!=='none'){
-      // Repel explodes from the gather center, not current hand pos
-      const cx = aMode==='repel' ? explodeCenter.x : attractor.x;
-      const cy = aMode==='repel' ? explodeCenter.y : attractor.y;
-      const cz = aMode==='repel' ? explodeCenter.z : attractor.z;
-      const dx = p.x - cx;
-      const dy = p.y - cy;
-      const dz = p.z - cz;
-      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) + 0.001;
-      const nx = dx/dist, ny = dy/dist, nz = dz/dist;
-
-      if(aMode === 'repel'){
-        // Explosive from gather center — strongest when close (just gathered)
-        const strength = Math.min(25 / (dist * dist + 0.05), 80);
-        p.vx += nx * strength * dt;
-        p.vy += ny * strength * dt;
-        p.vz += nz * strength * dt;
-      } else if(aMode === 'attract'){
-        // Strong constant-ish pull regardless of distance
-        const strength = Math.min(12 / (dist + 0.2), 30);
-        p.vx -= nx * strength * dt;
-        p.vy -= ny * strength * dt;
-        p.vz -= nz * strength * dt;
-      } else if(aMode === 'orbit'){
-        const strength = Math.min(10 / (dist + 0.3), 20);
-        p.vx += (-ny * strength * 0.7 - nx * strength * 0.1) * dt;
-        p.vy += ( nx * strength * 0.7 - ny * strength * 0.1) * dt;
-        p.vz += (-nz * strength * 0.1) * dt;
+    // ── Spring force: pull toward shape target ──
+    if(aMode==='heartbeat'){
+      // During heartbeat: fast direct lerp so the pulse is visible
+      p.x += (p.tx - p.x) * 0.25;
+      p.y += (p.ty - p.y) * 0.25;
+      p.z += (p.tz - p.z) * 0.25;
+      p.vx = 0; p.vy = 0; p.vz = 0;
+    } else {
+      const sk = 2.0;
+      if(curShape!=='scatter'){
+        p.vx += (p.tx - p.x) * sk * dt;
+        p.vy += (p.ty - p.y) * sk * dt;
+        p.vz += (p.tz - p.z) * sk * dt;
       }
     }
 
@@ -512,13 +530,18 @@ function updateParticles(dt){
 
     // ── Soft boundary: prevent escape ──
     const r = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
-    if(r > 7){
-      const brake = 0.85;
-      p.vx *= brake; p.vy *= brake; p.vz *= brake;
-      const pull = (r - 7) * 0.5;
-      p.vx -= (p.x/r) * pull * dt;
-      p.vy -= (p.y/r) * pull * dt;
-      p.vz -= (p.z/r) * pull * dt;
+    const bnd = aMode==='repel' ? 12 : 7;
+    if(r > bnd){
+      const bounce = 0.6;
+      p.x = (p.x/r) * bnd;
+      p.y = (p.y/r) * bnd;
+      p.z = (p.z/r) * bnd;
+      const dot = (p.vx*(p.x/r) + p.vy*(p.y/r) + p.vz*(p.z/r));
+      if(dot > 0){
+        p.vx -= 2 * dot * (p.x/r) * bounce;
+        p.vy -= 2 * dot * (p.y/r) * bounce;
+        p.vz -= 2 * dot * (p.z/r) * bounce;
+      }
     }
 
     const j = i * 3;
@@ -538,22 +561,52 @@ function animate(t){
   requestAnimationFrame(animate);
   const dt=Math.min((t-lastT)/1000,.1); lastT=t;
 
-  // No manual detectHands() call needed — Camera util handles it via callback
+  // Heartbeat: strong visible pulse, always based around scale 1.0
+  if(aMode==='heartbeat'){
+    const cycle = (performance.now() / 600) % 1;
+    let pulse;
+    if(cycle < 0.1) pulse = Math.sin(cycle / 0.1 * Math.PI);
+    else if(cycle < 0.2) pulse = 0;
+    else if(cycle < 0.3) pulse = Math.sin((cycle-0.2) / 0.1 * Math.PI) * 0.7;
+    else pulse = -0.2;
+    targetScale = 1.0 + pulse * 0.8;
+  }
+
+  const scaleSpeed = aMode==='heartbeat' ? 14 : 4;
+  curScale += (targetScale - curScale) * scaleSpeed * dt;
+  curScale = Math.max(0.4, Math.min(2.0, curScale));
+
+  // Scale controls camera distance: small scale = far away, big scale = close up
+  const scaleZoom = 6.0 / curScale;
   updateParticles(dt);
 
-  rotY+=(tRotY-rotY)*4*dt; rotX+=(tRotX-rotX)*4*dt; zoom+=(tZoom-zoom)*4*dt;
+  rotY+=(tRotY-rotY)*4*dt; rotX+=(tRotX-rotX)*4*dt; zoom+=(scaleZoom-zoom)*3*dt;
   if(!mDown&&!handLM) tRotY+=dt*.12;
+  if(aMode==='spin') tRotY+=dt*2.5;
+  if(aMode==='rspin') tRotY-=dt*2.5;
+
+  // Heart + heartbeat: smoothly swing camera back to front view
+  if(curShape==='heart' && aMode==='heartbeat'){
+    // Normalize tRotY to nearest multiple of 2π (front face)
+    const fullTurns = Math.round(tRotY / (Math.PI * 2));
+    const frontY = fullTurns * Math.PI * 2;
+    tRotY += (frontY - tRotY) * 5 * dt;
+    tRotX += (0.25 - tRotX) * 5 * dt; // default slight tilt
+  }
+
   cam3d.position.set(Math.sin(rotY)*Math.cos(rotX)*zoom, Math.sin(rotX)*zoom, Math.cos(rotY)*Math.cos(rotX)*zoom);
   cam3d.lookAt(0,0,0);
   starMesh.rotation.y+=dt*.025;
-  renderer.render(scene,cam3d);
+  if(composer) composer.render();
+  else renderer.render(scene,cam3d);
 
-  statEl.textContent=`${P.length} 粒子 · ${mpReady?'手势':'鼠标'} · ${aMode} · ${Math.round(1/Math.max(dt,.001))} fps`;
+  statEl.textContent=`${P.length} 粒子 · ${mpReady?'手势':'鼠标'} · ext:${lastExt} · ${aMode} · scale:${curScale.toFixed(2)} · ${Math.round(1/Math.max(dt,.001))} fps`;
 }
 
 /* ══════ RESIZE ══════ */
 window.addEventListener('resize',()=>{
   renderer.setSize(W(),H()); cam3d.aspect=W()/H(); cam3d.updateProjectionMatrix();
+  if(composer) composer.setSize(W(),H());
 });
 
 /* ══════ BOOT ══════ */
