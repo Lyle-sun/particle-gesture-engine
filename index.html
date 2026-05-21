@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>粒子手势引擎</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#06060f;overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#fff}
+    #c{display:block;position:fixed;top:0;left:0}
+    #video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
+
+    #skel{
+      position:fixed;bottom:24px;right:24px;width:160px;height:120px;
+      border-radius:12px;border:1.5px solid rgba(120,160,255,.25);
+      background:rgba(6,6,20,.7);backdrop-filter:blur(8px);
+      z-index:20;opacity:0;transition:opacity .5s;
+      transform:scaleX(-1);
+    }
+    #skel.on{opacity:1}
+
+    /* (gesture hud removed) */
+
+    .shapes{
+      position:fixed;bottom:28px;left:50%;transform:translateX(-50%);z-index:20;
+      display:flex;flex-direction:row;gap:10px;
+    }
+    .shapes button{
+      width:48px;height:48px;border-radius:12px;border:1.5px solid rgba(255,255,255,.1);
+      background:rgba(255,255,255,.04);color:rgba(255,255,255,.5);
+      font-size:18px;cursor:pointer;transition:all .3s;backdrop-filter:blur(6px);
+      display:flex;align-items:center;justify-content:center;position:relative;
+    }
+    .shapes button:hover{background:rgba(255,255,255,.08);color:#fff}
+    .shapes button.on{
+      border-color:rgba(120,170,255,.6);color:#fff;
+      background:rgba(120,170,255,.12);box-shadow:0 0 16px rgba(120,170,255,.15);
+    }
+    .shapes button .tt{
+      position:absolute;bottom:56px;left:50%;transform:translateX(-50%);
+      font-size:11px;color:rgba(255,255,255,.45);
+      white-space:nowrap;opacity:0;transition:opacity .2s;pointer-events:none;letter-spacing:.5px;
+    }
+    .shapes button:hover .tt{opacity:1}
+
+    /* (modes removed — gesture auto-switches) */
+
+    #stat{
+      position:fixed;top:18px;right:22px;z-index:20;
+      font-size:11px;color:rgba(255,255,255,.25);pointer-events:none;text-align:right;
+    }
+  </style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline></video>
+<canvas id="skel"></canvas>
+<canvas id="c"></canvas>
+
+<div class="shapes" id="shapeBar">
+  <button class="on" data-s="nebula">☁<span class="tt">星云</span></button>
+  <button data-s="helix">𝌆<span class="tt">螺旋</span></button>
+  <button data-s="sphere">◉<span class="tt">星球</span></button>
+  <button data-s="wave">〰<span class="tt">波浪</span></button>
+  <button data-s="ring">◎<span class="tt">光环</span></button>
+  <button data-s="scatter">✺<span class="tt">散射</span></button>
+</div>
+
+<div id="stat"></div>
+
+<!-- Three.js via importmap (ES module) -->
+<script type="importmap">
+  {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}
+</script>
+
+<!-- MediaPipe old-style (stable, callback-driven) -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js"></script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ══════ DOM ══════ */
+const canvas  = document.getElementById('c');
+const video   = document.getElementById('video');
+const skelCv  = document.getElementById('skel');
+const skCtx   = skelCv.getContext('2d');
+const statEl  = document.getElementById('stat');
+const W = () => innerWidth, H = () => innerHeight;
+
+/* ══════ THREE SETUP ══════ */
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(W(), H());
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+
+const scene = new THREE.Scene();
+const cam3d = new THREE.PerspectiveCamera(55, W()/H(), 0.1, 80);
+cam3d.position.set(0, 0.5, 6);
+cam3d.lookAt(0, 0, 0);
+scene.add(new THREE.AmbientLight(0x222244, 0.4));
+
+/* ══════ GLOW TEXTURE ══════ */
+function makeGlow(sz=128){
+  const cv=document.createElement('canvas'); cv.width=cv.height=sz;
+  const x=cv.getContext('2d');
+  const g=x.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+  g.addColorStop(0,'rgba(255,255,255,1)');
+  g.addColorStop(0.05,'rgba(255,255,255,0.95)');
+  g.addColorStop(0.2,'rgba(255,255,255,0.55)');
+  g.addColorStop(0.4,'rgba(255,255,255,0.1)');
+  g.addColorStop(1,'rgba(255,255,255,0)');
+  x.fillStyle=g; x.fillRect(0,0,sz,sz);
+  return new THREE.CanvasTexture(cv);
+}
+const glowTex = makeGlow();
+
+/* ══════ STAR FIELD ══════ */
+const STAR_N=1200;
+const stGeo=new THREE.BufferGeometry();
+const stPos=new Float32Array(STAR_N*3), stCol=new Float32Array(STAR_N*3);
+for(let i=0;i<STAR_N;i++){
+  const r=10+Math.random()*25, th=Math.random()*Math.PI*2, ph=(Math.random()-.5)*Math.PI;
+  stPos[i*3]=Math.cos(th)*Math.cos(ph)*r; stPos[i*3+1]=Math.sin(ph)*r; stPos[i*3+2]=Math.sin(th)*Math.cos(ph)*r;
+  const c=new THREE.Color().setHSL(.55+Math.random()*.2,.5,.4+Math.random()*.5);
+  stCol[i*3]=c.r; stCol[i*3+1]=c.g; stCol[i*3+2]=c.b;
+}
+stGeo.setAttribute('position',new THREE.BufferAttribute(stPos,3));
+stGeo.setAttribute('color',new THREE.BufferAttribute(stCol,3));
+const starMesh=new THREE.Points(stGeo,new THREE.PointsMaterial({
+  size:.03,map:glowTex,vertexColors:true,
+  blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:.5
+}));
+scene.add(starMesh);
+
+/* ══════ MAIN PARTICLES ══════ */
+const MAX=5000;
+const P=[];
+const geo=new THREE.BufferGeometry();
+const posA=new Float32Array(MAX*3);
+const colA=new Float32Array(MAX*3);
+const sizA=new Float32Array(MAX);
+geo.setAttribute('position',new THREE.BufferAttribute(posA,3));
+geo.setAttribute('color',new THREE.BufferAttribute(colA,3));
+geo.setAttribute('size',new THREE.BufferAttribute(sizA,1));
+const pMat=new THREE.PointsMaterial({
+  size:.12,map:glowTex,vertexColors:true,
+  blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:.9,
+});
+const pMesh=new THREE.Points(geo,pMat);
+scene.add(pMesh);
+
+for(let i=0;i<MAX;i++){
+  const r=2+Math.random()*3, th=Math.random()*Math.PI*2, ph=(Math.random()-.5)*Math.PI;
+  P.push({
+    x:Math.cos(th)*Math.cos(ph)*r, y:Math.sin(ph)*r, z:Math.sin(th)*Math.cos(ph)*r,
+    vx:0,vy:0,vz:0, tx:0,ty:0,tz:0,
+    color:new THREE.Color().setHSL(Math.random(),.8,.5+Math.random()*.4),
+    size:.02+Math.random()*.06
+  });
+}
+
+/* ══════ SHAPE GENERATORS ══════ */
+let curShape='nebula';
+
+function shapeNebula(i,n){
+  const arms=3,arm=i%arms,ba=(arm/arms)*Math.PI*2;
+  const t=i/n,r=.3+t*3.2,a=ba+t*Math.PI*2.5;
+  const sc=(1-t)*.7+.15;
+  return{x:Math.cos(a)*r+(Math.random()-.5)*sc,y:(Math.random()-.5)*sc*1.8*(1-t*.6),z:Math.sin(a)*r+(Math.random()-.5)*sc};
+}
+function shapeHelix(i,n){
+  const t=(i/n)*Math.PI*2*6,h=(i/n-.5)*5;
+  const strand=i%2,a=t+(strand?Math.PI:0),j=.06;
+  return{x:Math.cos(a)*1.4+(Math.random()-.5)*j,y:h+(Math.random()-.5)*j,z:Math.sin(a)*1.4+(Math.random()-.5)*j};
+}
+function shapeSphere(i,n){
+  const th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1);
+  const r=1.8*(.85+Math.random()*.15);
+  return{x:r*Math.sin(ph)*Math.cos(th),y:r*Math.sin(ph)*Math.sin(th),z:r*Math.cos(ph)};
+}
+function shapeWave(i,n){
+  const cols=80,row=Math.floor(i/cols),col=i%cols;
+  const x=(col/cols-.5)*6,z=(row/(n/cols)-.5)*6;
+  const y=Math.sin(x*1.8)*Math.cos(z*1.8)*.8;
+  return{x:x+(Math.random()-.5)*.06,y,z:z+(Math.random()-.5)*.06};
+}
+function shapeRing(i,n){
+  if(i<n*.55){
+    const a=Math.random()*Math.PI*2,R=2+Math.random()*.4;
+    return{x:Math.cos(a)*R,y:(Math.random()-.5)*.08,z:Math.sin(a)*R};
+  }
+  const th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1),r=.9;
+  return{x:r*Math.sin(ph)*Math.cos(th),y:r*Math.sin(ph)*Math.sin(th),z:r*Math.cos(ph)};
+}
+function shapeScatter(i,n){
+  const r=1+Math.random()*4.5,th=Math.random()*Math.PI*2,ph=(Math.random()-.5)*Math.PI;
+  return{x:Math.cos(th)*Math.cos(ph)*r,y:Math.sin(ph)*r,z:Math.sin(th)*Math.cos(ph)*r};
+}
+
+const shapeFns={nebula:shapeNebula,helix:shapeHelix,sphere:shapeSphere,wave:shapeWave,ring:shapeRing,scatter:shapeScatter};
+const shapeHues={nebula:.58,helix:.75,sphere:.52,wave:.42,ring:.62,scatter:0};
+
+function assignTargets(){
+  const fn=shapeFns[curShape], bh=shapeHues[curShape];
+  for(let i=0;i<P.length;i++){
+    const t=fn(i,P.length);
+    P[i].tx=t.x; P[i].ty=t.y; P[i].tz=t.z;
+    if(curShape==='scatter') P[i].color.setHSL(Math.random(),.85,.45+Math.random()*.45);
+    else P[i].color.setHSL((bh+(i/P.length)*.12+Math.random()*.04)%1,.85,.45+Math.random()*.45);
+  }
+}
+assignTargets();
+
+/* ══════ SHAPE BUTTONS ══════ */
+document.getElementById('shapeBar').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b)return;
+  curShape=b.dataset.s;
+  document.querySelectorAll('.shapes button').forEach(x=>x.classList.toggle('on',x===b));
+  assignTargets();
+});
+window.addEventListener('keydown',e=>{
+  const map={'1':'nebula','2':'helix','3':'sphere','4':'wave','5':'ring','6':'scatter'};
+  if(map[e.key]){curShape=map[e.key];assignTargets();
+    document.querySelectorAll('.shapes button').forEach(x=>x.classList.toggle('on',x.dataset.s===curShape));
+  }
+});
+
+/* ══════ CAMERA ORBIT (mouse/touch) ══════ */
+let rotY=0,rotX=.25,tRotY=0,tRotX=.25,zoom=6,tZoom=6;
+let mDown=false,mPX=0,mPY=0;
+let attractor=new THREE.Vector3(), aMode='none';
+
+function setAtt(cx,cy){attractor.set((cx/W())*8-4,-(cy/H())*8+4,0);}
+
+canvas.addEventListener('mousedown',e=>{mDown=true;mPX=e.clientX;mPY=e.clientY;aMode='attract';setAtt(e.clientX,e.clientY);});
+window.addEventListener('mouseup',()=>{mDown=false;aMode='none';});
+window.addEventListener('mousemove',e=>{
+  if(!mDown)return;
+  const dx=e.clientX-mPX,dy=e.clientY-mPY;
+  if(aMode!=='attract'||Math.abs(dx)>3||Math.abs(dy)>3){
+    tRotY+=dx*.015;tRotX+=dy*.015;tRotX=Math.max(-1.2,Math.min(1.2,tRotX));
+    mPX=e.clientX;mPY=e.clientY;aMode='none';
+  }
+  if(aMode==='attract'&&mDown)setAtt(e.clientX,e.clientY);
+});
+canvas.addEventListener('wheel',e=>{tZoom=Math.max(2,Math.min(14,tZoom+e.deltaY*.005));});
+
+canvas.addEventListener('touchstart',e=>{mDown=true;aMode='attract';mPX=e.touches[0].clientX;mPY=e.touches[0].clientY;setAtt(mPX,mPY);},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const dx=e.touches[0].clientX-mPX,dy=e.touches[0].clientY-mPY;
+  if(aMode==='attract'&&Math.abs(dx)<2&&Math.abs(dy)<2){setAtt(e.touches[0].clientX,e.touches[0].clientY);}
+  else{tRotY+=dx*.015;tRotX+=dy*.015;tRotX=Math.max(-1.2,Math.min(1.2,tRotX));aMode='none';}
+  mPX=e.touches[0].clientX;mPY=e.touches[0].clientY;
+},{passive:false});
+canvas.addEventListener('touchend',()=>{mDown=false;aMode='none';});
+
+/* ══════════════════════════════════════════
+   MEDIAPIPE — old stable @mediapipe/hands
+   Callback-driven via Camera util = every
+   frame auto-sent, no manual throttle needed
+   ══════════════════════════════════════════ */
+let handLM = null;
+let mpReady = false;
+let gestureCandidate = 'none';
+let gestureCandidateCount = 0;
+let prevMode = 'none';
+const explodeCenter = new THREE.Vector3();
+
+const SKEL_CONN=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[0,9],[9,10],[10,11],[11,12],[0,13],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
+
+function isPinch(lm){
+  return Math.hypot(lm[4].x-lm[8].x, lm[4].y-lm[8].y) < 0.08;
+}
+
+function countOpen(lm){
+  const w=lm[0]; let c=0;
+  for(const[tip,pip]of[[8,6],[12,10],[16,14],[20,18]]){
+    if(Math.hypot(lm[tip].x-w.x,lm[tip].y-w.y) > Math.hypot(lm[pip].x-w.x,lm[pip].y-w.y)*1.05) c++;
+  }
+  return c;
+}
+
+// Unproject hand 2D coords to 3D world via camera ray → camera-facing plane
+const _ray = new THREE.Raycaster();
+const _ndc = new THREE.Vector2();
+const _plane = new THREE.Plane();
+const _hit = new THREE.Vector3();
+const _camDir = new THREE.Vector3();
+
+function ndc2world(nx, ny){
+  const mx = 1 - nx; // mirror X for selfie view
+  _ndc.set(mx * 2 - 1, -(ny * 2 - 1)); // convert to clip space [-1,1]
+  // Build a plane facing the camera, passing through the origin
+  cam3d.getWorldDirection(_camDir);
+  _plane.setFromNormalAndCoplanarPoint(_camDir, new THREE.Vector3(0,0,0));
+  _ray.setFromCamera(_ndc, cam3d);
+  if(_ray.ray.intersectPlane(_plane, _hit)){
+    return _hit.clone();
+  }
+  // fallback: just project forward a fixed distance
+  _ray.setFromCamera(_ndc, cam3d);
+  return _ray.ray.at(zoom, new THREE.Vector3());
+}
+
+function onHandResults(results){
+  if(results.multiHandLandmarks && results.multiHandLandmarks.length > 0){
+    const lm = results.multiHandLandmarks[0];
+    handLM = lm;
+
+    const pinch = isPinch(lm);
+    const ext = countOpen(lm);
+
+    // Determine raw gesture mode
+    let rawMode;
+    if(pinch){
+      rawMode='attract';
+    } else if(ext >= 4){
+      rawMode='repel';
+    } else if(ext >= 2){
+      rawMode='attract';
+    } else {
+      rawMode='orbit';
+    }
+
+    // Gesture smoothing: only switch mode after N consecutive same-mode frames
+    if(rawMode === gestureCandidate){
+      gestureCandidateCount++;
+    } else {
+      gestureCandidate = rawMode;
+      gestureCandidateCount = 1;
+    }
+    if(gestureCandidateCount >= 3){
+      const newMode = gestureCandidate;
+      // When switching TO repel from attract, snapshot the gather point as explosion center
+      if(newMode === 'repel' && aMode === 'attract'){
+        explodeCenter.copy(attractor);
+      }
+      aMode = newMode;
+    }
+
+    // Choose attractor point based on confirmed mode
+    if(aMode==='attract' && pinch){
+      const px = (lm[4].x + lm[8].x) / 2;
+      const py = (lm[4].y + lm[8].y) / 2;
+      const pinchW = ndc2world(px, py);
+      attractor.copy(pinchW);
+    } else {
+      const palmPts = [0, 5, 9, 13, 17];
+      let cx=0, cy=0;
+      for(const idx of palmPts){ cx+=lm[idx].x; cy+=lm[idx].y; }
+      cx/=palmPts.length; cy/=palmPts.length;
+      const palmW = ndc2world(cx, cy);
+      attractor.copy(palmW);
+    }
+
+    // Skeleton preview
+    skelCv.width=160; skelCv.height=120;
+    skCtx.clearRect(0,0,160,120);
+    const sx=160,sy=120,sc=.72,ox=(1-sc)*sx/2,oy=(1-sc)*sy/2;
+    skCtx.lineWidth=1.2; skCtx.shadowBlur=3;
+    for(const[a,b]of SKEL_CONN){
+      skCtx.beginPath();
+      skCtx.moveTo(lm[a].x*sx*sc+ox, lm[a].y*sy*sc+oy);
+      skCtx.lineTo(lm[b].x*sx*sc+ox, lm[b].y*sy*sc+oy);
+      skCtx.strokeStyle='rgba(120,165,255,.55)'; skCtx.shadowColor='rgba(120,165,255,.4)';
+      skCtx.stroke();
+    }
+    for(const p of lm){
+      skCtx.beginPath(); skCtx.arc(p.x*sx*sc+ox, p.y*sy*sc+oy, 2, 0, Math.PI*2);
+      skCtx.fillStyle='rgba(255,255,255,.75)'; skCtx.shadowColor='rgba(255,255,255,.5)';
+      skCtx.fill();
+    }
+    skCtx.shadowBlur=0;
+    skelCv.classList.add('on');
+  } else {
+    handLM = null;
+    skelCv.classList.remove('on');
+    if(!mDown) aMode='none';
+  }
+}
+
+async function initHandTracking(){
+  try {
+
+    const hands = new Hands({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5,
+    });
+
+    hands.onResults(onHandResults);
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:{ideal:640}, height:{ideal:480}, facingMode:'user' }
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    // Camera util: automatically sends every frame to hands.send()
+    const mpCam = new Camera(video, {
+      onFrame: async () => { await hands.send({image: video}); },
+      width: 640,
+      height: 480,
+    });
+    await mpCam.start();
+
+    mpReady = true;
+
+  } catch(e){
+    console.warn('手势初始化失败:', e.message);
+  }
+}
+
+/* ══════ UPDATE ══════ */
+function updateParticles(dt){
+  for(let i=0;i<P.length;i++){
+    const p=P[i];
+
+    // ── Spring force: always pull toward shape target ──
+    const sk = aMode==='attract' ? 0.3 : (aMode==='repel' ? 0.6 : 2.0);
+    if(curShape!=='scatter'){
+      p.vx += (p.tx - p.x) * sk * dt;
+      p.vy += (p.ty - p.y) * sk * dt;
+      p.vz += (p.tz - p.z) * sk * dt;
+    }
+
+    // ── Hand interaction force ──
+    if(aMode!=='none'){
+      // Repel explodes from the gather center, not current hand pos
+      const cx = aMode==='repel' ? explodeCenter.x : attractor.x;
+      const cy = aMode==='repel' ? explodeCenter.y : attractor.y;
+      const cz = aMode==='repel' ? explodeCenter.z : attractor.z;
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const dz = p.z - cz;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz) + 0.001;
+      const nx = dx/dist, ny = dy/dist, nz = dz/dist;
+
+      if(aMode === 'repel'){
+        // Explosive from gather center — strongest when close (just gathered)
+        const strength = Math.min(25 / (dist * dist + 0.05), 80);
+        p.vx += nx * strength * dt;
+        p.vy += ny * strength * dt;
+        p.vz += nz * strength * dt;
+      } else if(aMode === 'attract'){
+        // Strong constant-ish pull regardless of distance
+        const strength = Math.min(12 / (dist + 0.2), 30);
+        p.vx -= nx * strength * dt;
+        p.vy -= ny * strength * dt;
+        p.vz -= nz * strength * dt;
+      } else if(aMode === 'orbit'){
+        const strength = Math.min(10 / (dist + 0.3), 20);
+        p.vx += (-ny * strength * 0.7 - nx * strength * 0.1) * dt;
+        p.vy += ( nx * strength * 0.7 - ny * strength * 0.1) * dt;
+        p.vz += (-nz * strength * 0.1) * dt;
+      }
+    }
+
+    // ── Damping (uniform, moderate) ──
+    p.vx *= 0.97;
+    p.vy *= 0.97;
+    p.vz *= 0.97;
+
+    // ── Integrate ──
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+
+    // ── Soft boundary: prevent escape ──
+    const r = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+    if(r > 7){
+      const brake = 0.85;
+      p.vx *= brake; p.vy *= brake; p.vz *= brake;
+      const pull = (r - 7) * 0.5;
+      p.vx -= (p.x/r) * pull * dt;
+      p.vy -= (p.y/r) * pull * dt;
+      p.vz -= (p.z/r) * pull * dt;
+    }
+
+    const j = i * 3;
+    posA[j]=p.x; posA[j+1]=p.y; posA[j+2]=p.z;
+    colA[j]=p.color.r; colA[j+1]=p.color.g; colA[j+2]=p.color.b;
+    sizA[i]=p.size;
+  }
+  geo.setDrawRange(0, P.length);
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.color.needsUpdate = true;
+  geo.attributes.size.needsUpdate = true;
+}
+
+/* ══════ ANIMATE ══════ */
+let lastT=performance.now();
+function animate(t){
+  requestAnimationFrame(animate);
+  const dt=Math.min((t-lastT)/1000,.1); lastT=t;
+
+  // No manual detectHands() call needed — Camera util handles it via callback
+  updateParticles(dt);
+
+  rotY+=(tRotY-rotY)*4*dt; rotX+=(tRotX-rotX)*4*dt; zoom+=(tZoom-zoom)*4*dt;
+  if(!mDown&&!handLM) tRotY+=dt*.12;
+  cam3d.position.set(Math.sin(rotY)*Math.cos(rotX)*zoom, Math.sin(rotX)*zoom, Math.cos(rotY)*Math.cos(rotX)*zoom);
+  cam3d.lookAt(0,0,0);
+  starMesh.rotation.y+=dt*.025;
+  renderer.render(scene,cam3d);
+
+  statEl.textContent=`${P.length} 粒子 · ${mpReady?'手势':'鼠标'} · ${aMode} · ${Math.round(1/Math.max(dt,.001))} fps`;
+}
+
+/* ══════ RESIZE ══════ */
+window.addEventListener('resize',()=>{
+  renderer.setSize(W(),H()); cam3d.aspect=W()/H(); cam3d.updateProjectionMatrix();
+});
+
+/* ══════ BOOT ══════ */
+animate(performance.now());
+initHandTracking();
+</script>
+</body>
+</html>
