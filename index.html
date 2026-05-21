@@ -6,7 +6,7 @@
   <title>粒子手势引擎</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{background:#06060f;overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#fff}
+    body{background:#06081a;overflow:hidden;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#fff;transition:background 1.2s}
     #c{display:block;position:fixed;top:0;left:0}
     #video{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none}
 
@@ -49,6 +49,14 @@
       position:fixed;top:18px;right:22px;z-index:20;
       font-size:11px;color:rgba(255,255,255,.25);pointer-events:none;text-align:right;
     }
+
+    #gestureHint{
+      position:fixed;bottom:90px;left:22px;z-index:20;
+      font-size:11px;color:rgba(255,255,255,.4);
+      line-height:1.9;letter-spacing:.3px;
+      pointer-events:none;opacity:1;transition:opacity .4s;
+    }
+    #gestureHint.show{opacity:1}
   </style>
 </head>
 <body>
@@ -91,6 +99,13 @@
 <canvas id="textCanvas" style="display:none"></canvas>
 
 <div id="stat"></div>
+<div id="gestureHint">
+  ✋ 五指张开 → 放大<br>
+  ✊ 握拳 → 缩小<br>
+  ☝️ 1指 → 心跳<br>
+  ✌️ 2指 → 正旋转<br>
+  🤟 3指 → 反旋转
+</div>
 
 <script type="module">
 /* ══════ CDN → LOCAL FALLBACK ══════ */
@@ -163,7 +178,7 @@ try {
   const { UnrealBloomPass } = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/UnrealBloomPass.js');
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, cam3d));
-  composer.addPass(new UnrealBloomPass(new THREE.Vector2(W(), H()), 0.8, 0.4, 0.2));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(W(), H()), 1.2, 0.5, 0.15));
 } catch(e) { console.warn('Bloom unavailable:', e.message); }
 
 /* ══════ GLOW TEXTURE ══════ */
@@ -190,7 +205,7 @@ const stPos=new Float32Array(STAR_N*3), stCol=new Float32Array(STAR_N*3);
 for(let i=0;i<STAR_N;i++){
   const r=10+Math.random()*25, th=Math.random()*Math.PI*2, ph=(Math.random()-.5)*Math.PI;
   stPos[i*3]=Math.cos(th)*Math.cos(ph)*r; stPos[i*3+1]=Math.sin(ph)*r; stPos[i*3+2]=Math.sin(th)*Math.cos(ph)*r;
-  const c=new THREE.Color().setHSL(.55+Math.random()*.2,.5,.4+Math.random()*.5);
+  const c=new THREE.Color().setHSL(.6+Math.random()*.15,.6,.3+Math.random()*.4);
   stCol[i*3]=c.r; stCol[i*3+1]=c.g; stCol[i*3+2]=c.b;
 }
 stGeo.setAttribute('position',new THREE.BufferAttribute(stPos,3));
@@ -223,7 +238,7 @@ for(let i=0;i<MAX;i++){
   P.push({
     x:Math.cos(th)*Math.cos(ph)*r, y:Math.sin(ph)*r, z:Math.sin(th)*Math.cos(ph)*r,
     vx:0,vy:0,vz:0, tx:0,ty:0,tz:0,
-    color:new THREE.Color().setHSL(Math.random(),.8,.5+Math.random()*.4),
+    color:new THREE.Color().setHSL(.5+Math.random()*.25,.9,.45+Math.random()*.4),
     size:.04+Math.random()*.1
   });
 }
@@ -287,7 +302,8 @@ function shapeHeart(i,n){
 }
 
 const shapeFns={nebula:shapeNebula,helix:shapeHelix,sphere:shapeSphere,wave:shapeWave,ring:shapeRing,scatter:shapeScatter,heart:shapeHeart,text:shapeText};
-const shapeHues={nebula:.58,helix:.75,sphere:.52,wave:.42,ring:.62,scatter:0,heart:0,text:.55};
+const shapeHues={nebula:.58,helix:.78,sphere:.52,wave:.48,ring:.72,scatter:0,heart:0,text:.55};
+const shapeBg={nebula:'#06081a',helix:'#0a0620',sphere:'#040e1a',wave:'#041012',ring:'#0c0618',scatter:'#08080e',heart:'#1a0610',text:'#060818'};
 
 /* ══════ TEXT SHAPE ══════ */
 let textPixels = []; // [{x,y}] normalized positions from text render
@@ -347,7 +363,7 @@ function assignTargets(){
   for(let i=0;i<P.length;i++){
     const t=fn(i,P.length);
     P[i].tx=t.x; P[i].ty=t.y; P[i].tz=t.z;
-    if(curShape==='scatter') P[i].color.setHSL(Math.random(),.85,.45+Math.random()*.45);
+    if(curShape==='scatter') P[i].color.setHSL(.5+Math.random()*.3,.9,.4+Math.random()*.5);
     else if(curShape==='heart'){
       const d = Math.sqrt(t.x*t.x + t.y*t.y) / 1.5;
       const hue = 0.96 + d * 0.02;
@@ -356,12 +372,12 @@ function assignTargets(){
       P[i].color.setHSL(hue % 1, sat, Math.max(0.35, lit));
     }
     else if(curShape==='text'){
-      // Golden-cyan gradient based on position
-      const tx = (t.x + 2.5) / 5; // normalize 0-1
-      P[i].color.setHSL(0.5 + tx * 0.12, 0.8, 0.5 + Math.random() * 0.3);
+      const tx = (t.x + 2.5) / 5;
+      P[i].color.setHSL(.52 + tx * .2, .9, .5 + Math.random() * .35);
     }
-    else P[i].color.setHSL((bh+(i/P.length)*.12+Math.random()*.04)%1,.85,.45+Math.random()*.45);
+    else P[i].color.setHSL((bh+(i/P.length)*.18+Math.random()*.06)%1,.9,.4+Math.random()*.5);
   }
+  document.body.style.background = shapeBg[curShape] || '#06060f';
 }
 assignTargets();
 
@@ -701,9 +717,7 @@ function animate(t){
   rotY+=(tRotY-rotY)*4*dt; rotX+=(tRotX-rotX)*4*dt; zoom+=(scaleZoom-zoom)*3*dt;
 
   if(curShape==='text'){
-    // Text: always face front, snap back to 0
-    tRotY += (0 - tRotY) * 5 * dt;
-    // Clamp vertical rotation to small tilt only
+    tRotY *= Math.pow(0.001, dt);
     tRotX += (0.25 - tRotX) * 5 * dt;
     // Spin/rspin: rotate all tx/ty targets around origin
     if(aMode==='spin' || aMode==='rspin'){
