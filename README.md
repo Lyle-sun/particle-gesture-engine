@@ -10,8 +10,8 @@
 
 ```bash
 # 任选一种
-npx serve .
-python3 -m http.server
+npx serve .        # → http://localhost:3000
+python3 -m http.server  # → http://localhost:8000
 ```
 
 浏览器打开对应地址，允许摄像头即可。必须通过 HTTP 访问，`file://` 下摄像头权限受限。
